@@ -44,6 +44,14 @@ router = create_stream_router(price_cache)  # Returns FastAPI APIRouter
 
 Default tickers: AAPL, GOOGL, MSFT, AMZN, TSLA, NVDA, META, JPM, V, NFLX. Seed prices and per-ticker volatility/drift params are in `app/market/seed_prices.py`.
 
+## App, Database, Portfolio
+
+- **`app/main.py`** — `create_app(price_cache=None, db_path=None, snapshot_interval=30)`. Lifespan creates/seeds the DB and runs the 30s snapshot loop. Module-level `app` for uvicorn. Market source + SSE are not wired yet (build step 2).
+- **`app/db/`** — `schema.sql` + `get_connection(db_path)` (lazy init: creates tables, seeds the default user and 10-ticker watchlist only when the user row is absent) and `transaction(conn)` (`BEGIN IMMEDIATE`). DB file: `DB_PATH` env var, else `<repo>/db/finally.db`. Connections are autocommit (`isolation_level=None`); wrap writes in `transaction()`.
+- **`app/validation.py`** — `normalize_ticker`, `normalize_side`, `parse_quantity` (returns `Decimal`). Reuse these for watchlist and LLM actions.
+- **`app/errors.py`** — raise `AppError(msg, status_code=400)`; handlers turn every non-2xx (incl. request validation, 404, 500) into `{"error": "..."}`.
+- **`app/portfolio/`** — `execute_trade(conn, cache, ticker, side, quantity)` is the single trade path (manual and LLM): validates, prices from `cache.get_price`, cent-rounds the notional half-up with `Decimal`, and does check + writes + snapshot in one transaction. Raises `AppError` on any failure. `get_portfolio`, `record_snapshot`, `get_history` (last 500, oldest first).
+
 ## Running Tests
 
 ```bash

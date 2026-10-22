@@ -88,7 +88,9 @@ The user runs a single Docker command (or a provided start script). A browser op
 finally/
 ├── frontend/                 # Next.js TypeScript project (static export)
 ├── backend/                  # FastAPI uv project (Python)
-│   └── db/                   # Schema definitions, seed data, migration logic
+│   └── app/                  # Application package (imports are app.*)
+│       ├── market/           # Market data module (built, see MARKET_DATA_SUMMARY.md)
+│       └── db/               # Schema definitions, seed data, lazy init
 ├── planning/                 # Project-wide documentation for agents
 │   ├── PLAN.md               # This document
 │   └── ...                   # Additional agent reference docs
@@ -102,15 +104,16 @@ finally/
 │   └── .gitkeep              # Directory exists in repo; finally.db is gitignored
 ├── Dockerfile                # Multi-stage build (Node → Python)
 ├── docker-compose.yml        # Optional convenience wrapper
-├── .env                      # Environment variables (gitignored, .env.example committed)
-└── .gitignore
+├── .env                      # Environment variables (gitignored)
+├── .env.example              # Committed template of .env
+└── .gitignore                # Must cover .env and db/*.db
 ```
 
 ### Key Boundaries
 
 - **`frontend/`** is a self-contained Next.js project. It knows nothing about Python. It talks to the backend via `/api/*` endpoints and `/api/stream/*` SSE endpoints. Internal structure is up to the Frontend Engineer agent.
 - **`backend/`** is a self-contained uv project with its own `pyproject.toml`. It owns all server logic including database initialization, schema, seed data, API routes, SSE streaming, market data, and LLM integration. Internal structure is up to the Backend/Market Data agents.
-- **`backend/db/`** contains schema SQL definitions and seed logic. The backend lazily initializes the database on first request — creating tables and seeding default data if the SQLite file doesn't exist or is empty.
+- **`backend/app/db/`** contains schema SQL definitions and seed logic. The backend lazily initializes the database on first request — creating tables and seeding default data if the SQLite file doesn't exist or is empty.
 - **`db/`** at the top level is the runtime volume mount point. The SQLite file (`db/finally.db`) is created here by the backend and persists across container restarts via Docker volume.
 - **`planning/`** contains project-wide documentation, including this plan. All agents reference files here as the shared contract.
 - **`test/`** contains Playwright E2E tests and supporting infrastructure (e.g., `docker-compose.test.yml`). Unit tests live within `frontend/` and `backend/` respectively, following each framework's conventions.
@@ -376,14 +379,14 @@ The frontend is a single-page application with a dense, terminal-inspired layout
 ### Multi-Stage Dockerfile
 
 ```
-Stage 1: Node 20 slim
+Stage 1: Node 24 slim (node:24-slim; Node 20 is end-of-life)
   - Copy frontend/
   - npm install && npm run build (produces static export)
 
 Stage 2: Python 3.12 slim
   - Install uv
   - Copy backend/
-  - uv sync (install Python dependencies from lockfile)
+  - uv sync --frozen --no-dev (production deps only, from lockfile)
   - Copy frontend build output into a static/ directory
   - Expose port 8000
   - CMD: uvicorn serving FastAPI app
@@ -454,3 +457,65 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
+
+---
+
+## 13. Review Feedback (doc-review)
+
+Findings marked **[code]** were checked against the existing market-data module in `backend/app/market/`.
+
+### A. Decide before building (these change the schema or API contract)
+
+1. **Removing a held ticker from the watchlist breaks the position [code].** Both `SimulatorDataSource.remove_ticker` and `MassiveDataSource.remove_ticker` call `cache.remove(ticker)` (`simulator.py:254`, `massive_client.py:75`). The position then has no price: it can't be valued or sold. **Rule:** the market source tracks *watchlist ∪ open positions*; `DELETE /api/watchlist/{ticker}` only stops the price feed when no position is held.
+2. **Any ticker is accepted [code].** The simulator gives unknown tickers a random seed price of $50–300 (`simulator.py:151`), so the LLM can invent tradable tickers, and `aapl` / `AAPL` become two different stocks. **Rule:** uppercase at the API boundary and validate the format (`^[A-Z.]{1,6}$`). Restricting to a fixed list is optional.
+3. **Money precision.** `cash_balance`, `quantity`, `avg_cost` are `REAL`. Round cash to cents on every trade (or store integer cents), set a minimum quantity (> 0) and a decimal limit for fractional shares.
+4. **"Daily change %" has no data source.** Section 10 requires it, but SSE events only carry the previous tick. Either add a session-open price to the cache or redefine it as "change since session start".
+5. **Response shapes are undefined.** Specify the error body for `POST /api/portfolio/trade` (status code + `{error}`) and the `/api/chat` response, e.g. `{message, trades: [{ticker, side, quantity, price, status, error}], watchlist_changes: [{ticker, action, status, error}]}`. Store the same shape in `chat_messages.actions`.
+6. **Volume: named or bind mount?** Section 4 says the root `db/` is the mount target; Section 11 uses the named volume `finally-data`. Pick the named volume (works the same on Windows); root `db/` is then only for local non-Docker runs.
+
+### B. Clarifications
+
+7. **Selling to zero** deletes the position row; `avg_cost` stays unchanged on partial sells.
+8. **Trade price** is `cache.get_price(ticker)` at request time; return an error if it is `None` (startup race, unknown ticker).
+9. **Trade atomicity.** Manual and LLM trades can collide. Run check + update in one SQLite transaction (`BEGIN IMMEDIATE`).
+10. **Multiple LLM trades** execute sequentially; a failure doesn't stop the rest; each result is reported in `actions`.
+11. **The LLM writes its message before the trades run,** so its text can claim success for a trade that failed. Accept this and render failures inline from `actions` (no second LLM call).
+12. **Malformed LLM output:** return the raw text as `message` with no actions. No retries.
+13. **Chat history window:** last 20 messages.
+14. **Dollar orders** ("buy $1000 of AAPL"): instruct the LLM to convert to quantity using the price in its context.
+15. **Header live total:** the frontend computes it from SSE prices × positions; no polling.
+16. **"% change" in positions and heatmap color:** versus average cost, in %.
+17. **Snapshot growth:** at 30s that's ~2,880 rows/day. Cap `GET /api/portfolio/history` (e.g. last 24h or 500 points).
+18. **Massive free tier** updates every 15s, so the price-flash UX will feel slow there. Note it so the frontend doesn't assume 500ms.
+19. **Env and host:** in Docker, `--env-file` injects variables (no `.env` file read inside the container); uvicorn CMD needs `--host 0.0.0.0`; start scripts should publish `127.0.0.1:8000:8000` since the app has no auth and the LLM can trade.
+20. **Frontend dev loop:** `output: 'export'` has no API routes. Add a dev-only rewrite of `/api/*` to `localhost:8000`, or always test through the built container.
+
+### C. Corrections to the plan (applied to sections 4 and 11; repo changes in 23–24 still to do)
+
+21. **Node 20 is end-of-life** (April 2026). Use `node:24-slim` in the Dockerfile.
+22. **Directory structure is stale [code].** Backend code lives in `backend/app/`, not `backend/db/`. Put DB code in `backend/app/db/`.
+23. **`.gitignore` misses the database [code].** It covers `.env` but not `db/finally.db`. Add `db/*.db`; create `.env.example` and `db/.gitkeep`.
+24. **`rich` is a production dependency [code]** but only `market_data_demo.py` uses it. Move it to `[dependency-groups] dev` and build with `uv sync --frozen --no-dev`.
+
+### D. Opportunities to simplify
+
+1. **Replace Section 6 with a pointer to `planning/MARKET_DATA_SUMMARY.md`** plus rule A1. The module is built; a second description will drift.
+2. **Drop `docker-compose.yml` and the Terraform paragraph.** The scripts are the one way to run it; cloud deploy is out of scope.
+3. **Build one start/stop script pair first** (the platform you use), the other later.
+4. **Drop `user_id` from every table except `users_profile`.** Nothing exercises it, and it adds a filter to every query and fixture.
+5. **Name one chart library:** Lightweight Charts for the main chart and P&L chart. Draw sparklines as inline SVG polylines and the treemap as plain divs/SVG.
+6. **Keep `GET /api/portfolio` raw** (cash + ticker/quantity/avg_cost). The frontend computes current value and P&L on each SSE tick in one helper.
+7. **`GET /api/watchlist` returns tickers + last price** for first paint only; SSE does the rest.
+8. **`LLM_MOCK` is just another implementation** of the same `get_llm_response()` function, not a branch through the chat flow.
+9. **Run Playwright on the host** against the container started by the script (`LLM_MOCK=true`), instead of a second container plus compose. Trim E2E to 4 flows: fresh start, buy/sell, watchlist add/remove, mocked chat trade.
+10. **Test against the simulator only.** One manual smoke test of Massive with a real key before release.
+
+### Suggested Build Order
+
+1. Backend: DB init + portfolio/trade endpoints with unit tests (no frontend, no LLM).
+2. Backend: watchlist endpoints + SSE route wired to the existing market data module (with rule A1).
+3. Backend: chat endpoint with `LLM_MOCK=true` first, then the real LiteLLM call.
+4. Frontend: static shell + SSE watchlist, then trade bar, positions, charts, chat.
+5. Dockerfile + one start script, then E2E.
+
+**Next action today:** accept or change the rules in section A (A1–A6), fold them into sections 6–8, then start build step 1 in `backend/app/db/`.

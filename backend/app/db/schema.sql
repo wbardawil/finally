@@ -1,0 +1,47 @@
+-- FinAlly schema. Single user: only users_profile carries a user id.
+-- Every statement is idempotent so init can run against an existing file.
+
+CREATE TABLE IF NOT EXISTS users_profile (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    cash_balance REAL NOT NULL DEFAULT 10000.0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    id TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL UNIQUE,
+    added_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS positions (
+    id TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL UNIQUE,
+    quantity REAL NOT NULL,
+    avg_cost REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+    id TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+    quantity REAL NOT NULL,
+    price REAL NOT NULL,
+    executed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    id TEXT PRIMARY KEY,
+    total_value REAL NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_recorded_at ON portfolio_snapshots (recorded_at);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    actions TEXT,
+    created_at TEXT NOT NULL
+);

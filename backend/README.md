@@ -18,12 +18,18 @@ FastAPI backend for the FinAlly AI Trading Workstation.
 - `tests/` - Unit and integration tests
   - `market/` - Market data tests
 
+- `market_data_demo.py` - Rich terminal demo of the simulator (dev-only)
+
+## Setup
+
+```bash
+uv sync            # Runtime deps + the dev group (pytest, ruff, rich)
+uv sync --no-dev   # Runtime deps only (what the Docker image uses)
+```
+
 ## Running Tests
 
 ```bash
-# Install dependencies
-uv sync --dev
-
 # Run all tests
 uv run pytest
 
@@ -37,6 +43,13 @@ uv run pytest tests/market/test_simulator.py
 uv run pytest -v
 ```
 
+## Demo
+
+```bash
+uv run market_data_demo.py                                  # 10 default tickers, 60s
+uv run market_data_demo.py --duration 20 --tickers AAPL,TSLA
+```
+
 ## Environment Variables
 
 - `MASSIVE_API_KEY` - Optional. If set, use real market data from Massive API. If not set, use the built-in simulator.
@@ -44,9 +57,6 @@ uv run pytest -v
 ## Development
 
 ```bash
-# Install dependencies
-uv sync --dev
-
 # Run linter
 uv run ruff check .
 

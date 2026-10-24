@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# FinAlly local SQLite database (Docker uses the finally-data volume)
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm

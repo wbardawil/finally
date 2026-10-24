@@ -4,8 +4,11 @@
 
 ```bash
 cd backend
-uv sync --extra dev   # Install all dependencies including test/lint tools
+uv sync          # Runtime deps + [dependency-groups] dev (pytest, ruff, rich)
+uv sync --no-dev # Runtime only, as in the Docker image
 ```
+
+Add runtime deps with `uv add <pkg>`, dev-only deps with `uv add --dev <pkg>`.
 
 ## Market Data API
 
@@ -17,7 +20,7 @@ from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_
 
 ### Core Types
 
-- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `timestamp`, plus properties `change`, `change_percent`, `direction` ("up"/"down"/"flat"), and `to_dict()` for JSON serialization.
+- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `timestamp`, plus properties `change`, `change_percent`, `direction` ("up"/"down"/"flat"), and `to_dict()` for JSON serialization. `change`/`change_percent` are tick-over-tick. **There is no session-start price yet** (PLAN A4); see `planning/MARKET_DATA_SUMMARY.md` "Known Gaps".
 
 - **`PriceCache`** — Thread-safe in-memory store. Key methods:
   - `update(ticker, price, timestamp=None) -> PriceUpdate`
@@ -27,7 +30,7 @@ from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_
   - `remove(ticker)`
   - `version` property — monotonic counter, increments on every update (for SSE change detection)
 
-- **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `MassiveDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`.
+- **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `MassiveDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`. `remove_ticker()` also evicts the ticker from the cache, so only call it when the ticker is neither on the watchlist nor held (PLAN A1).
 
 - **`create_market_data_source(cache)`** — Factory. Returns `MassiveDataSource` if `MASSIVE_API_KEY` is set, otherwise `SimulatorDataSource`.
 
@@ -47,13 +50,17 @@ Default tickers: AAPL, GOOGL, MSFT, AMZN, TSLA, NVDA, META, JPM, V, NFLX. Seed p
 ## Running Tests
 
 ```bash
-uv run --extra dev pytest -v              # All tests
-uv run --extra dev pytest --cov=app       # With coverage
-uv run --extra dev ruff check app/ tests/ # Lint
+uv run pytest -v               # All tests
+uv run pytest --cov=app        # With coverage
+uv run ruff check .            # Lint
+uv run ruff format --check .   # Format check
 ```
 
 ## Demo
 
 ```bash
-uv run market_data_demo.py   # Live terminal dashboard with simulated prices
+uv run market_data_demo.py                                  # 10 default tickers, 60s
+uv run market_data_demo.py --duration 20 --tickers AAPL,TSLA
 ```
+
+`rich` is dev-only, so the demo does not run in the production image.

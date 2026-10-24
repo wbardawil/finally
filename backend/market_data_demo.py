@@ -1,13 +1,15 @@
 """FinAlly Market Data Simulator Demo.
 
-Run with:  uv run market_data_demo.py
+Run with:  uv run market_data_demo.py [--duration 60] [--tickers AAPL,TSLA,...]
 
 Displays a live-updating terminal dashboard of simulated stock prices
-using the GBM simulator and Rich library.
+using the GBM simulator and Rich library. Rich is a dev-only dependency,
+so this needs the default `uv sync` (not `--no-dev`).
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import time
 from collections import deque
@@ -27,9 +29,9 @@ from app.market.simulator import SimulatorDataSource
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 # Ordered ticker list matching the default watchlist
-TICKERS = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "JPM", "V", "NFLX"]
+DEFAULT_TICKERS = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "JPM", "V", "NFLX"]
 
-DURATION = 60  # seconds
+DEFAULT_DURATION = 60  # seconds
 
 
 def sparkline(values: list[float]) -> str:
@@ -53,8 +55,9 @@ def format_price(price: float) -> str:
 
 def build_table(
     cache: PriceCache,
+    tickers: list[str],
     history: dict[str, deque],
-    elapsed: float,
+    session_start: dict[str, float],
 ) -> Table:
     """Build the price table."""
     table = Table(
@@ -67,15 +70,16 @@ def build_table(
     )
     table.add_column("Ticker", style="bold bright_white", width=8)
     table.add_column("Price", justify="right", width=10)
-    table.add_column("Change", justify="right", width=9)
-    table.add_column("Chg %", justify="right", width=8)
+    table.add_column("Tick", justify="right", width=9)
+    table.add_column("Tick %", justify="right", width=8)
+    table.add_column("Session %", justify="right", width=10)
     table.add_column("", width=3)  # arrow
     table.add_column("Sparkline", width=42, no_wrap=True)
 
-    for ticker in TICKERS:
+    for ticker in tickers:
         update = cache.get(ticker)
         if update is None:
-            table.add_row(ticker, "---", "---", "---", "", "")
+            table.add_row(ticker, "---", "---", "---", "---", "", "")
             continue
 
         # Direction styling
@@ -93,11 +97,18 @@ def build_table(
         change_str = f"[{color}]{update.change:+.2f}[/]"
         pct_str = f"[{color}]{update.change_percent:+.2f}%[/]"
 
+        # Change since this demo's first observed price (what PLAN.md calls
+        # "session-start price"; computed here because the cache lacks it)
+        start = session_start.get(ticker)
+        session_pct = (update.price - start) / start * 100 if start else 0.0
+        s_color = "green" if session_pct > 0 else "red" if session_pct < 0 else "bright_black"
+        session_str = f"[{s_color}]{session_pct:+.2f}%[/]"
+
         # Sparkline from history
         vals = list(history.get(ticker, []))
         spark_str = f"[bright_cyan]{sparkline(vals)}[/]" if len(vals) > 1 else ""
 
-        table.add_row(ticker, price_str, change_str, pct_str, arrow, spark_str)
+        table.add_row(ticker, price_str, change_str, pct_str, session_str, arrow, spark_str)
 
     return table
 
@@ -120,13 +131,16 @@ def build_event_log(events: deque) -> Panel:
 
 def build_dashboard(
     cache: PriceCache,
+    tickers: list[str],
     history: dict[str, deque],
+    session_start: dict[str, float],
     events: deque,
     start_time: float,
+    duration: float,
 ) -> Layout:
     """Build the full dashboard layout."""
     elapsed = time.time() - start_time
-    remaining = max(0, DURATION - elapsed)
+    remaining = max(0, duration - elapsed)
 
     layout = Layout()
     layout.split_column(
@@ -153,7 +167,7 @@ def build_dashboard(
     # Body: price table
     layout["body"].update(
         Panel(
-            build_table(cache, history, elapsed),
+            build_table(cache, tickers, history, session_start),
             title="[bold bright_white]Live Prices[/]",
             border_style="bright_black",
         )
@@ -165,7 +179,7 @@ def build_dashboard(
     return layout
 
 
-def print_summary(cache: PriceCache) -> None:
+def print_summary(cache: PriceCache, tickers: list[str]) -> None:
     """Print final summary comparing to seed prices."""
     console = Console()
     console.print()
@@ -178,7 +192,7 @@ def print_summary(cache: PriceCache) -> None:
     table.add_column("Final Price", justify="right", width=12)
     table.add_column("Session Change", justify="right", width=14)
 
-    for ticker in TICKERS:
+    for ticker in tickers:
         seed = SEED_PRICES.get(ticker, 0)
         update = cache.get(ticker)
         if update is None:
@@ -204,34 +218,37 @@ def print_summary(cache: PriceCache) -> None:
     console.print()
 
 
-async def run() -> None:
+async def run(tickers: list[str], duration: float) -> None:
     """Main demo loop."""
     cache = PriceCache()
     source = SimulatorDataSource(price_cache=cache, update_interval=0.5)
 
     # Per-ticker price history for sparklines
-    history: dict[str, deque] = {t: deque(maxlen=40) for t in TICKERS}
+    history: dict[str, deque] = {t: deque(maxlen=40) for t in tickers}
+
+    # First price seen per ticker, for the Session % column
+    session_start: dict[str, float] = {}
 
     # Recent event log
     events: deque = deque(maxlen=12)
 
-    await source.start(TICKERS)
+    await source.start(tickers)
     start_time = time.time()
 
     # Seed initial history points
-    for ticker in TICKERS:
+    for ticker in tickers:
         update = cache.get(ticker)
         if update:
             history[ticker].append(update.price)
+            session_start[ticker] = update.price
+
+    def dashboard() -> Layout:
+        return build_dashboard(cache, tickers, history, session_start, events, start_time, duration)
 
     try:
-        with Live(
-            build_dashboard(cache, history, events, start_time),
-            refresh_per_second=4,
-            screen=True,
-        ) as live:
+        with Live(dashboard(), refresh_per_second=4, screen=True) as live:
             last_version = cache.version
-            while time.time() - start_time < DURATION:
+            while time.time() - start_time < duration:
                 await asyncio.sleep(0.25)
 
                 # Check for updates
@@ -240,11 +257,12 @@ async def run() -> None:
                 last_version = cache.version
 
                 # Record history & detect events
-                for ticker in TICKERS:
+                for ticker in tickers:
                     update = cache.get(ticker)
                     if update is None:
                         continue
                     history[ticker].append(update.price)
+                    session_start.setdefault(ticker, update.price)
 
                     # Log notable moves
                     if abs(update.change_percent) > 1.0:
@@ -258,15 +276,38 @@ async def run() -> None:
                             f"${format_price(update.price)}"
                         )
 
-                live.update(build_dashboard(cache, history, events, start_time))
+                live.update(dashboard())
 
-    except KeyboardInterrupt:
+    except asyncio.CancelledError:
+        # asyncio.run() turns Ctrl+C into cancellation of this task, not a
+        # KeyboardInterrupt here; fall through so the summary still prints
         pass
     finally:
         await source.stop()
 
-    print_summary(cache)
+    print_summary(cache, tickers)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="FinAlly market data simulator demo")
+    parser.add_argument(
+        "--duration", type=float, default=DEFAULT_DURATION, help="seconds to run (default 60)"
+    )
+    parser.add_argument(
+        "--tickers",
+        default=",".join(DEFAULT_TICKERS),
+        help="comma-separated tickers (default: the 10-ticker default watchlist)",
+    )
+    args = parser.parse_args()
+    args.tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+    if not args.tickers:
+        parser.error("--tickers needs at least one ticker")
+    return args
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    args = parse_args()
+    try:
+        asyncio.run(run(args.tickers, args.duration))
+    except KeyboardInterrupt:
+        pass  # Raised by asyncio.run() after run() finished on Ctrl+C

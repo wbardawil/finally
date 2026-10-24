@@ -33,7 +33,7 @@ Single Docker container serving everything on port 8000:
 cd backend
 uv sync
 uv run market_data_demo.py     # live terminal dashboard of simulated prices
-uv run pytest                  # 73 market data tests
+uv run pytest                  # 90 market data tests
 ```
 
 ### Target (once the Dockerfile and scripts land)

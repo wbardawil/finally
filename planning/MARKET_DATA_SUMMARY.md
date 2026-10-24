@@ -1,6 +1,6 @@
 # Market Data Backend — Summary
 
-**Status:** Built, tested (73 tests passing, ruff clean), reviewed. **One gap against PLAN.md:** the session-start price required by decision A4 is not implemented yet (see [Known Gaps](#known-gaps-vs-planmd)).
+**Status:** Built, tested (90 tests passing, ruff check + format clean), reviewed. Matches PLAN.md, including the session-start price (A4). One caller-side rule remains for step 2 (see [Known Gaps](#known-gaps-vs-planmd)).
 
 Last verified: 2026-10-24.
 
@@ -27,9 +27,9 @@ MarketDataSource (ABC)
 
 | File | Purpose |
 |------|---------|
-| `models.py` | `PriceUpdate`: immutable frozen dataclass (ticker, price, previous_price, timestamp; derived change, change_percent, direction) |
+| `models.py` | `PriceUpdate`: immutable frozen dataclass (ticker, price, previous_price, timestamp, session_start_price; derived change, change_percent, session_change, session_change_percent, direction) |
 | `interface.py` | `MarketDataSource`: abstract base class defining `start/stop/add_ticker/remove_ticker/get_tickers` |
-| `cache.py` | `PriceCache`: thread-safe price store with a version counter for SSE change detection |
+| `cache.py` | `PriceCache`: thread-safe price store with a version counter for SSE change detection and a session-start price per ticker |
 | `seed_prices.py` | Realistic seed prices, per-ticker GBM params (drift/volatility), correlation groups |
 | `simulator.py` | `GBMSimulator` (Geometric Brownian Motion with Cholesky-correlated moves) + `SimulatorDataSource` |
 | `massive_client.py` | `MassiveDataSource`: REST polling client for Polygon.io via the `massive` package |
@@ -50,35 +50,39 @@ MarketDataSource (ABC)
 
 ```
 data: {"AAPL": {"ticker": "AAPL", "price": 190.5, "previous_price": 190.42,
-                "timestamp": 1761300000.1, "change": 0.08,
-                "change_percent": 0.042, "direction": "up"}, ...}
+                "session_start_price": 190.0, "timestamp": 1761300000.1,
+                "change": 0.08, "change_percent": 0.042,
+                "session_change_percent": 0.2632, "direction": "up"}, ...}
 ```
 
-`change` and `change_percent` are **tick-over-tick** (vs `previous_price`), not session change. The frontend should not label them "change %" in the watchlist (see Known Gaps).
+- `change` / `change_percent` are **tick-over-tick** (vs `previous_price`). They drive the flash direction.
+- `session_change_percent` is **vs `session_start_price`**. It is the watchlist "change %" (PLAN §6, §10).
+- `session_start_price` is the first price the cache recorded for the ticker since it began being tracked. `PriceCache.remove()` resets it: sources reseed a re-added ticker (unknown tickers get a *random* seed), so keeping the old start would show a fake move.
 
 ## Known Gaps vs PLAN.md
 
 | # | Gap | PLAN ref | Impact | Owner |
 |---|-----|----------|--------|-------|
-| 1 | **No session-start price** in `PriceCache` / `PriceUpdate` / SSE payload | A4, §6, §10 | Watchlist "change % since session start" cannot be built from SSE as specified. Fix: store the first price per ticker in the cache, add `session_start_price` to `PriceUpdate.to_dict()`, and add tests | Backend, before frontend watchlist |
-| 2 | `remove_ticker()` evicts the ticker from the cache unconditionally | A1, §6 | The caller (watchlist/portfolio layer) must only call it when the ticker is neither watched nor held, or held positions lose their price | Backend step 2 |
-| 3 | `stream.py` registers routes on a module-level `router`, so calling `create_stream_router()` twice adds duplicate routes | n/a | Harmless with one app instance, but it surprises tests that build several apps | Low priority |
-| 4 | Massive free tier updates every 15s | B18 | Price flashes will be sparse. The frontend must not assume 500ms | Frontend |
+| 1 | `remove_ticker()` evicts the ticker from the cache. This is correct for a data source, but the module cannot know about positions | A1, §6 | The step-2 watchlist/portfolio code must only call it when the ticker is neither watched nor held, or held positions lose their price | Backend step 2 |
+| 2 | Massive free tier updates every 15s | B18 | Price flashes will be sparse. The frontend must not assume 500ms | Frontend |
+
+Resolved 2026-10-24: the session-start price (A4) was added to the cache, model, and SSE payload. `create_stream_router()` now builds a fresh router per call (it used to share a module-level router, so a second call duplicated routes).
 
 ## Test Suite
 
-**73 tests, all passing.** There are 6 test modules in `backend/tests/market/`.
+**90 tests, all passing.** There are 7 test modules in `backend/tests/market/`.
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| test_models.py | 11 | models.py: 100% |
-| test_cache.py | 13 | cache.py: 100% |
-| test_simulator.py | 17 | simulator.py: 98% |
+| test_models.py | 16 | models.py: 100% |
+| test_cache.py | 18 | cache.py: 100% |
+| test_simulator.py | 19 | simulator.py: 98% |
 | test_simulator_source.py | 10 | (integration tests) |
 | test_factory.py | 7 | factory.py: 100% |
-| test_massive.py | 13 | massive_client.py: 56% (API methods are mocked) |
+| test_massive.py | 13 | massive_client.py: 94% (API calls are mocked) |
+| test_stream.py | 7 | stream.py: 92% (generator driven with a fake request) |
 
-Overall coverage: 84%. `stream.py` has no direct tests.
+Overall coverage: 97% (measured 2026-10-24). I also checked `/api/stream/prices` by hand against a real uvicorn server running the simulator.
 
 ```bash
 cd backend
@@ -100,7 +104,7 @@ uv run market_data_demo.py                          # 10 default tickers, 60s
 uv run market_data_demo.py --duration 20 --tickers AAPL,TSLA,NVDA
 ```
 
-It shows price, tick change, tick %, **session %** (computed by the demo from the first price it saw, which previews gap #1), a direction arrow, a sparkline, and an event log for >1% ticks. When it exits (timeout or Ctrl+C) it prints a seed-vs-final summary.
+It shows price, tick change, tick %, **session %** (`PriceUpdate.session_change_percent`), a direction arrow, a sparkline, and an event log for >1% ticks. When it exits (timeout or Ctrl+C) it prints a seed-vs-final summary.
 
 `rich` is a **dev-only** dependency (`[dependency-groups] dev`). Plain `uv sync` / `uv run` include it. The production image (`uv sync --frozen --no-dev`) does not, so the demo will not run inside the Docker container.
 
@@ -122,7 +126,7 @@ all_prices = cache.get_all()        # dict[str, PriceUpdate]
 
 # Dynamic tracking
 await source.add_ticker("TSLA")
-await source.remove_ticker("GOOGL") # only if not watched AND not held (gap #2)
+await source.remove_ticker("GOOGL") # only if not watched AND not held (gap #1)
 
 # Shutdown
 await source.stop()

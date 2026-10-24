@@ -20,14 +20,14 @@ from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_
 
 ### Core Types
 
-- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `timestamp`, plus properties `change`, `change_percent`, `direction` ("up"/"down"/"flat"), and `to_dict()` for JSON serialization. `change`/`change_percent` are tick-over-tick. **There is no session-start price yet** (PLAN A4); see `planning/MARKET_DATA_SUMMARY.md` "Known Gaps".
+- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `timestamp`, `session_start_price`, plus properties `change`, `change_percent` (tick-over-tick), `session_change`, `session_change_percent` (vs session start, the watchlist "change %"), `direction` ("up"/"down"/"flat"), and `to_dict()` for JSON serialization.
 
 - **`PriceCache`** — Thread-safe in-memory store. Key methods:
   - `update(ticker, price, timestamp=None) -> PriceUpdate`
   - `get(ticker) -> PriceUpdate | None`
   - `get_price(ticker) -> float | None`
   - `get_all() -> dict[str, PriceUpdate]`
-  - `remove(ticker)`
+  - `remove(ticker)` — also resets the ticker's session-start price
   - `version` property — monotonic counter, increments on every update (for SSE change detection)
 
 - **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `MassiveDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`. `remove_ticker()` also evicts the ticker from the cache, so only call it when the ticker is neither on the watchlist nor held (PLAN A1).

@@ -177,7 +177,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 
 - A single background task (simulator or Massive poller) writes to an in-memory price cache
 - The cache holds the latest price, previous price, session-start price, and timestamp for each ticker
-- The session-start price is the first price recorded for a ticker since the process started; it backs the "change %" shown in the watchlist
+- The session-start price is the first price recorded for a ticker since it began being tracked in this process; it backs the "change %" shown in the watchlist. It resets when a ticker stops being tracked, because a re-added ticker is reseeded by the source
 - SSE streams read from this cache and push updates to connected clients
 - This architecture supports future multi-user scenarios without changes to the data layer
 

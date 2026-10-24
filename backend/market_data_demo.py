@@ -57,7 +57,6 @@ def build_table(
     cache: PriceCache,
     tickers: list[str],
     history: dict[str, deque],
-    session_start: dict[str, float],
 ) -> Table:
     """Build the price table."""
     table = Table(
@@ -97,10 +96,8 @@ def build_table(
         change_str = f"[{color}]{update.change:+.2f}[/]"
         pct_str = f"[{color}]{update.change_percent:+.2f}%[/]"
 
-        # Change since this demo's first observed price (what PLAN.md calls
-        # "session-start price"; computed here because the cache lacks it)
-        start = session_start.get(ticker)
-        session_pct = (update.price - start) / start * 100 if start else 0.0
+        # Change since the cache's session-start price (what the watchlist shows)
+        session_pct = update.session_change_percent
         s_color = "green" if session_pct > 0 else "red" if session_pct < 0 else "bright_black"
         session_str = f"[{s_color}]{session_pct:+.2f}%[/]"
 
@@ -133,7 +130,6 @@ def build_dashboard(
     cache: PriceCache,
     tickers: list[str],
     history: dict[str, deque],
-    session_start: dict[str, float],
     events: deque,
     start_time: float,
     duration: float,
@@ -167,7 +163,7 @@ def build_dashboard(
     # Body: price table
     layout["body"].update(
         Panel(
-            build_table(cache, tickers, history, session_start),
+            build_table(cache, tickers, history),
             title="[bold bright_white]Live Prices[/]",
             border_style="bright_black",
         )
@@ -226,9 +222,6 @@ async def run(tickers: list[str], duration: float) -> None:
     # Per-ticker price history for sparklines
     history: dict[str, deque] = {t: deque(maxlen=40) for t in tickers}
 
-    # First price seen per ticker, for the Session % column
-    session_start: dict[str, float] = {}
-
     # Recent event log
     events: deque = deque(maxlen=12)
 
@@ -240,10 +233,9 @@ async def run(tickers: list[str], duration: float) -> None:
         update = cache.get(ticker)
         if update:
             history[ticker].append(update.price)
-            session_start[ticker] = update.price
 
     def dashboard() -> Layout:
-        return build_dashboard(cache, tickers, history, session_start, events, start_time, duration)
+        return build_dashboard(cache, tickers, history, events, start_time, duration)
 
     try:
         with Live(dashboard(), refresh_per_second=4, screen=True) as live:
@@ -262,7 +254,6 @@ async def run(tickers: list[str], duration: float) -> None:
                     if update is None:
                         continue
                     history[ticker].append(update.price)
-                    session_start.setdefault(ticker, update.price)
 
                     # Log notable moves
                     if abs(update.change_percent) > 1.0:

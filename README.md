@@ -4,6 +4,8 @@ A visually stunning AI-powered trading workstation that streams live market data
 
 Built entirely by coding agents as a capstone project for an agentic AI coding course.
 
+> **Status:** only the market data backend is built so far. The frontend, portfolio/chat API, Dockerfile, and start scripts are still to come. See [`planning/PROJECT_SUMMARY.md`](planning/PROJECT_SUMMARY.md).
+
 ## Features
 
 - **Live price streaming** via SSE with green/red flash animations
@@ -25,17 +27,25 @@ Single Docker container serving everything on port 8000:
 
 ## Quick Start
 
+### Today: market data demo
+
 ```bash
-# Clone and configure
-cp .env.example .env
-# Add your OPENROUTER_API_KEY to .env
+cd backend
+uv sync
+uv run market_data_demo.py     # live terminal dashboard of simulated prices
+uv run pytest                  # 90 market data tests
+```
 
-# Run with Docker
+### Target (once the Dockerfile and scripts land)
+
+```bash
+cp .env.example .env           # then add your OPENROUTER_API_KEY
 docker build -t finally .
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
-
+docker run -v finally-data:/app/db -p 127.0.0.1:8000:8000 --env-file .env finally
 # Open http://localhost:8000
 ```
+
+The port is bound to `127.0.0.1` on purpose: the app has no auth and the AI can place trades.
 
 ## Environment Variables
 
@@ -53,7 +63,7 @@ finally/
 ├── backend/     # FastAPI uv project
 ├── planning/    # Project documentation and agent contracts
 ├── test/        # Playwright E2E tests
-├── db/          # SQLite volume mount (runtime)
+├── db/          # SQLite file for local non-Docker runs (Docker uses the finally-data volume)
 └── scripts/     # Start/stop helpers
 ```
 

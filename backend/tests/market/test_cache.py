@@ -101,3 +101,43 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+
+class TestPriceCacheSessionStart:
+    """Session-start price tracking (PLAN.md A4)."""
+
+    def test_first_update_sets_session_start(self):
+        cache = PriceCache()
+        update = cache.update("AAPL", 190.00)
+        assert update.session_start_price == 190.00
+
+    def test_session_start_persists_across_updates(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.00)
+        cache.update("AAPL", 195.00)
+        update = cache.update("AAPL", 209.00)
+        assert update.session_start_price == 190.00
+        assert update.previous_price == 195.00
+        assert update.session_change_percent == 10.0
+
+    def test_session_start_is_rounded(self):
+        cache = PriceCache()
+        update = cache.update("AAPL", 190.12345)
+        assert update.session_start_price == 190.12
+
+    def test_session_start_is_per_ticker(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.00)
+        cache.update("TSLA", 250.00)
+        assert cache.update("AAPL", 191.00).session_start_price == 190.00
+        assert cache.update("TSLA", 251.00).session_start_price == 250.00
+
+    def test_remove_resets_session_start(self):
+        """A re-added ticker is reseeded by the source, so its session restarts."""
+        cache = PriceCache()
+        cache.update("AAPL", 190.00)
+        cache.update("AAPL", 200.00)
+        cache.remove("AAPL")
+        update = cache.update("AAPL", 150.00)
+        assert update.session_start_price == 150.00
+        assert update.session_change_percent == 0.0

@@ -177,7 +177,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 
 - A single background task (simulator or Massive poller) writes to an in-memory price cache
 - The cache holds the latest price, previous price, session-start price, and timestamp for each ticker
-- The session-start price is the first price recorded for a ticker since the process started; it backs the "change %" shown in the watchlist
+- The session-start price is the first price recorded for a ticker since it began being tracked in this process; it backs the "change %" shown in the watchlist. It resets when a ticker stops being tracked, because a re-added ticker is reseeded by the source
 - SSE streams read from this cache and push updates to connected clients
 - This architecture supports future multi-user scenarios without changes to the data layer
 
@@ -525,7 +525,7 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 19. **Env and host:** in Docker, `--env-file` injects variables (no `.env` file read inside the container); uvicorn CMD needs `--host 0.0.0.0`; start scripts should publish `127.0.0.1:8000:8000` since the app has no auth and the LLM can trade.
 20. **Frontend dev loop:** `output: 'export'` has no API routes. Add a dev-only rewrite of `/api/*` to `localhost:8000`, or always test through the built container.
 
-### C. Corrections to the plan (applied to sections 4 and 11; repo changes in 23–24 still to do)
+### C. Corrections to the plan (applied to sections 4 and 11; repo changes in 23–24 done 2026-10-24)
 
 21. **Node 20 is end-of-life** (April 2026). Use `node:24-slim` in the Dockerfile.
 22. **Directory structure is stale [code].** Backend code lives in `backend/app/`, not `backend/db/`. Put DB code in `backend/app/db/`.

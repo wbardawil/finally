@@ -33,6 +33,22 @@ DEFAULT_TICKERS = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "JPM
 
 DEFAULT_DURATION = 60  # seconds
 
+# Vertical space the price panel needs beyond one line per ticker:
+# panel border (2) + table top border, header, separator, bottom border (4).
+# When space is short Rich drops the table's bottom border before any row,
+# so the rows themselves need one line less.
+TABLE_CHROME_LINES = 6
+TABLE_MIN_CHROME_LINES = 5
+
+# Horizontal space the price panel needs besides the sparkline: data column
+# widths (48) + their padding (12) + sparkline padding (2) + table borders (8)
+# + panel border and padding (4). The sparkline gets whatever is left.
+TABLE_FIXED_COLUMNS = 74
+SPARKLINE_MIN_WIDTH = 4  # Narrower than this, the column is dropped
+SPARKLINE_MAX_WIDTH = 40  # Matches the history kept per ticker
+EVENT_LOG_MAX_LINES = 10
+EVENT_LOG_MIN_LINES = 5  # Below this the log shows too little to be worth it
+
 
 def sparkline(values: list[float]) -> str:
     """Render a sequence of values as a unicode sparkline."""
@@ -57,8 +73,11 @@ def build_table(
     cache: PriceCache,
     tickers: list[str],
     history: dict[str, deque],
+    spark_width: int,
 ) -> Table:
-    """Build the price table."""
+    """Build the price table. Data columns keep their full width; the
+    sparkline shows the newest `spark_width` points, or is dropped if < min."""
+    show_spark = spark_width >= SPARKLINE_MIN_WIDTH
     table = Table(
         title=None,
         expand=True,
@@ -67,18 +86,24 @@ def build_table(
         pad_edge=True,
         padding=(0, 1),
     )
-    table.add_column("Ticker", style="bold bright_white", width=8)
-    table.add_column("Price", justify="right", width=10)
-    table.add_column("Tick", justify="right", width=9)
-    table.add_column("Tick %", justify="right", width=8)
-    table.add_column("Session %", justify="right", width=10)
-    table.add_column("", width=3)  # arrow
-    table.add_column("Sparkline", width=42, no_wrap=True)
+    for name, width, justify in (
+        ("Ticker", 8, "left"),
+        ("Price", 10, "right"),
+        ("Tick", 9, "right"),
+        ("Tick %", 8, "right"),
+        ("Session %", 10, "right"),
+        ("", 3, "left"),  # arrow
+    ):
+        # min_width stops Rich from squeezing data columns to make room
+        table.add_column(name, justify=justify, width=width, min_width=width, no_wrap=True)
+    table.columns[0].style = "bold bright_white"
+    if show_spark:
+        table.add_column("Sparkline", width=spark_width, no_wrap=True, overflow="crop")
 
     for ticker in tickers:
         update = cache.get(ticker)
         if update is None:
-            table.add_row(ticker, "---", "---", "---", "---", "", "")
+            table.add_row(ticker, "---", "---", "---", "---", "", *([""] if show_spark else []))
             continue
 
         # Direction styling
@@ -101,16 +126,17 @@ def build_table(
         s_color = "green" if session_pct > 0 else "red" if session_pct < 0 else "bright_black"
         session_str = f"[{s_color}]{session_pct:+.2f}%[/]"
 
-        # Sparkline from history
-        vals = list(history.get(ticker, []))
-        spark_str = f"[bright_cyan]{sparkline(vals)}[/]" if len(vals) > 1 else ""
-
-        table.add_row(ticker, price_str, change_str, pct_str, session_str, arrow, spark_str)
+        cells = [ticker, price_str, change_str, pct_str, session_str, arrow]
+        if show_spark:
+            # Newest points that fit the column
+            vals = list(history.get(ticker, []))[-spark_width:]
+            cells.append(f"[bright_cyan]{sparkline(vals)}[/]" if len(vals) > 1 else "")
+        table.add_row(*cells)
 
     return table
 
 
-def build_event_log(events: deque) -> Panel:
+def build_event_log(events: deque, height: int) -> Panel:
     """Build the event log panel."""
     text = Text()
     for evt in events:
@@ -122,7 +148,7 @@ def build_event_log(events: deque) -> Panel:
         text,
         title="[bold bright_yellow]Recent Events[/]",
         border_style="bright_black",
-        height=8,
+        height=height,
     )
 
 
@@ -133,17 +159,29 @@ def build_dashboard(
     events: deque,
     start_time: float,
     duration: float,
+    height: int,
+    width: int,
 ) -> Layout:
-    """Build the full dashboard layout."""
+    """Build the full dashboard layout for a `width` x `height` terminal.
+
+    The price table gets space first; the event log only takes what is left,
+    and the header collapses to one line when space is tight. If the table
+    still can't fit, the header says how many tickers are hidden.
+    """
     elapsed = time.time() - start_time
     remaining = max(0, duration - elapsed)
 
+    table_lines = len(tickers) + TABLE_CHROME_LINES
+    header_lines = 3 if height >= table_lines + 3 else 1
+    spare = height - header_lines - table_lines
+    footer_lines = min(EVENT_LOG_MAX_LINES, spare) if spare >= EVENT_LOG_MIN_LINES else 0
+    shown = max(0, min(len(tickers), height - header_lines - TABLE_MIN_CHROME_LINES))
+
+    sections = [Layout(name="header", size=header_lines), Layout(name="body")]
+    if footer_lines:
+        sections.append(Layout(name="footer", size=footer_lines))
     layout = Layout()
-    layout.split_column(
-        Layout(name="header", size=3),
-        Layout(name="body"),
-        Layout(name="footer", size=10),
-    )
+    layout.split_column(*sections)
 
     # Header
     header_text = Text.assemble(
@@ -157,20 +195,37 @@ def build_dashboard(
         (f"{len(cache)} tickers", "bright_white"),
         ("  |  ", "bright_black"),
         ("Ctrl+C to exit", "bright_black italic"),
+        no_wrap=True,  # Truncate rather than wrap: a wrapped header steals table rows
+        overflow="ellipsis",
     )
-    layout["header"].update(Panel(header_text, border_style="bright_yellow"))
+    if header_lines == 3:
+        layout["header"].update(Panel(header_text, border_style="bright_yellow"))
+    else:
+        layout["header"].update(header_text)
 
     # Body: price table
     layout["body"].update(
         Panel(
-            build_table(cache, tickers, history),
-            title="[bold bright_white]Live Prices[/]",
+            build_table(
+                cache,
+                tickers,
+                history,
+                min(SPARKLINE_MAX_WIDTH, width - TABLE_FIXED_COLUMNS),
+            ),
+            title=(
+                "[bold bright_white]Live Prices[/]"
+                if shown == len(tickers)
+                # In the title, not the header: the header line can be cut off
+                # on the right, and this warning must stay visible
+                else f"[bold red]Showing {shown} of {len(tickers)}: enlarge the terminal[/]"
+            ),
             border_style="bright_black",
         )
     )
 
-    # Footer: event log
-    layout["footer"].update(build_event_log(events))
+    # Footer: event log, only if there is room left after the table
+    if footer_lines:
+        layout["footer"].update(build_event_log(events, footer_lines))
 
     return layout
 
@@ -234,11 +289,15 @@ async def run(tickers: list[str], duration: float) -> None:
         if update:
             history[ticker].append(update.price)
 
+    console = Console()
+
     def dashboard() -> Layout:
-        return build_dashboard(cache, tickers, history, events, start_time, duration)
+        # Re-read the size every frame so resizing the window adapts the layout
+        width, height = console.size
+        return build_dashboard(cache, tickers, history, events, start_time, duration, height, width)
 
     try:
-        with Live(dashboard(), refresh_per_second=4, screen=True) as live:
+        with Live(dashboard(), console=console, refresh_per_second=4, screen=True) as live:
             last_version = cache.version
             while time.time() - start_time < duration:
                 await asyncio.sleep(0.25)

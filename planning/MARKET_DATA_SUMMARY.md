@@ -104,7 +104,7 @@ uv run market_data_demo.py                          # 10 default tickers, 60s
 uv run market_data_demo.py --duration 20 --tickers AAPL,TSLA,NVDA
 ```
 
-It shows price, tick change, tick %, **session %** (`PriceUpdate.session_change_percent`), a direction arrow, a sparkline, and an event log for >1% ticks. When it exits (timeout or Ctrl+C) it prints a seed-vs-final summary.
+It shows price, tick change, tick %, **session %** (`PriceUpdate.session_change_percent`), a direction arrow, a sparkline, and an event log for >1% ticks. When it exits (timeout or Ctrl+C) it prints a seed-vs-final summary. The layout adapts to the terminal size every frame: the price table gets space first, the sparkline and event log shrink or hide, and if the window is still too short the panel title says "Showing N of M". It has been checked at every size from 75–160 columns × 8–41 lines.
 
 `rich` is a **dev-only** dependency (`[dependency-groups] dev`). Plain `uv sync` / `uv run` include it. The production image (`uv sync --frozen --no-dev`) does not, so the demo will not run inside the Docker container.
 
